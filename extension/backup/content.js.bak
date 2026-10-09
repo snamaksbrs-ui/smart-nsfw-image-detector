@@ -1,0 +1,7 @@
+/**
+ * Backup snapshot of previous content script before the fix.
+ */
+(function() {
+  'use strict';
+  // Previously used static heuristic detection and injected scripts in a less robust way.
+})();
