@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "NSFW Guard - Image Protection",
+  "version": "1.0.0",
+  "description": "Automatically detects and blurs inappropriate images while browsing. Protects your privacy by processing images locally on your device.",
+  "permissions": [
+    "webRequest",
+    "activeTab",
+    "scripting",
+    "webNavigation"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "js/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["js/content.js"],
+      "css": ["css/overlay.css"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "images/icon-16.png",
+      "48": "images/icon-48.png",
+      "128": "images/icon-128.png"
+    },
+    "default_title": "NSFW Guard Settings"
+  },
+  "icons": {
+    "16": "images/icon-16.png",
+    "48": "images/icon-48.png",
+    "128": "images/icon-128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["js/detector.js", "js/blur.js", "js/ort.wasm-simd.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

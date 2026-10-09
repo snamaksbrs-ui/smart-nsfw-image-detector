@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>إعدادات NSFW Guard</title>
+    <link rel="stylesheet" href="css/popup.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🛡️ حماية الصور</h1>
+            <p class="subtitle">كشف وطمس الصور المسيئة تلقائيًا</p>
+        </div>
+
+        <div class="settings-section">
+            <div class="setting-item">
+                <div class="setting-label">
+                    <label for="enable-toggle">تفعيل الحماية</label>
+                </div>
+                <div class="setting-control">
+                    <input type="checkbox" id="enable-toggle" class="toggle-switch" checked>
+                </div>
+            </div>
+
+            <div class="setting-item">
+                <div class="setting-label">
+                    <label for="sensitivity">مستوى الحساسية</label>
+                    <span class="value-display" id="sensitivity-value">عالي</span>
+                </div>
+                <div class="setting-control">
+                    <input type="range" id="sensitivity" min="0" max="100" value="62" class="slider">
+                    <div class="slider-labels">
+                        <span>منخفض</span>
+                        <span>عالي</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="setting-item">
+                <div class="setting-label">
+                    <label for="blur-strength">قوة الطمس</label>
+                    <span class="value-display" id="blur-value">20</span>
+                </div>
+                <div class="setting-control">
+                    <input type="range" id="blur-strength" min="5" max="50" value="20" class="slider">
+                    <div class="slider-labels">
+                        <span>خفيف</span>
+                        <span>قوي</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="setting-item">
+                <div class="setting-label">
+                    <label for="blur-method">طريقة الطمس</label>
+                </div>
+                <div class="setting-control">
+                    <select id="blur-method" class="dropdown">
+                        <option value="gaussian">Gaussian Blur (ضبابي)</option>
+                        <option value="overlay">Dark Overlay (غطاء داكن)</option>
+                        <option value="pixelate">Pixelate (بكسل)</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="setting-item">
+                <div class="setting-label">
+                    <label for="cache-size">حجم الذاكرة المؤقتة (صور)</label>
+                    <span class="value-display" id="cache-value">512</span>
+                </div>
+                <div class="setting-control">
+                    <input type="range" id="cache-size" min="128" max="2048" value="512" step="128" class="slider">
+                </div>
+            </div>
+
+            <div class="setting-item">
+                <div class="setting-label">
+                    <label for="allow-override">السماح بإظهار الصور يدويًا</label>
+                </div>
+                <div class="setting-control">
+                    <input type="checkbox" id="allow-override" class="toggle-switch" checked>
+                </div>
+            </div>
+        </div>
+
+        <div class="stats-section">
+            <div class="stat-box">
+                <div class="stat-number" id="images-scanned">0</div>
+                <div class="stat-label">صور تم فحصها</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-number" id="images-blurred">0</div>
+                <div class="stat-label">صور تم طمسها</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-number" id="processing-time">0ms</div>
+                <div class="stat-label">متوسط الوقت</div>
+            </div>
+        </div>
+
+        <div class="action-buttons">
+            <button id="clear-cache" class="btn btn-secondary">مسح الذاكرة المؤقتة</button>
+            <button id="reset-stats" class="btn btn-secondary">إعادة تعيين الإحصائيات</button>
+        </div>
+
+        <div class="info-section">
+            <p class="info-text">
+                ℹ️ <strong>ملاحظة:</strong> جميع عمليات الفحص تتم محليًا على جهازك. لا يتم إرسال الصور إلى أي خادم خارجي.
+            </p>
+        </div>
+
+        <div class="footer">
+            <a href="https://github.com/snamaksbrs-ui/smart-nsfw-image-detector" target="_blank">GitHub</a>
+            <span class="separator">•</span>
+            <a href="#" id="about-link">حول البرنامج</a>
+        </div>
+    </div>
+
+    <script src="js/popup.js"></script>
+</body>
+</html>
