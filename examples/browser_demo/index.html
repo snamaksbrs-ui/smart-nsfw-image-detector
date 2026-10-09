@@ -1,0 +1,52 @@
+from __future__ import annotations
+
+import hashlib
+import io
+from pathlib import Path
+
+import numpy as np
+from PIL import Image
+
+from nsfw_guard import BlurController, DetectionSettings, LocalNSFWDetector
+
+
+def make_safe_test_image(size=(256, 256), color=(230, 230, 230)):
+    return Image.new("RGB", size, color=color)
+
+
+def make_unsafe_test_image(size=(256, 256), seed=7):
+    rng = np.random.default_rng(seed)
+    arr = np.zeros((size[1], size[0], 3), dtype=np.uint8)
+    arr[:, :, 0] = rng.integers(140, 200, size=(size[1], size[0]))
+    arr[:, :, 1] = rng.integers(40, 80, size=(size[1], size[0]))
+    arr[:, :, 2] = rng.integers(30, 70, size=(size[1], size[0]))
+    return Image.fromarray(arr, "RGB")
+
+
+def make_uncertain_test_image(size=(256, 256)):
+    arr = np.zeros((size[1], size[0], 3), dtype=np.uint8)
+    arr[:, :, 0] = 180
+    arr[:, :, 1] = 160
+    arr[:, :, 2] = 150
+    return Image.fromarray(arr, "RGB")
+
+
+def image_to_bytes(image: Image.Image) -> bytes:
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def image_hash(image: Image.Image) -> str:
+    return hashlib.sha256(image_to_bytes(image)).hexdigest()
+
+
+if __name__ == "__main__":
+    settings = DetectionSettings(threshold=0.62, blur_strength=18)
+    detector = LocalNSFWDetector(settings=settings)
+    controller = BlurController(settings=settings)
+    safe = make_safe_test_image()
+    unsafe = make_unsafe_test_image()
+    print(detector.detect_image(safe))
+    print(detector.detect_image(unsafe))
+    print(controller.apply_to_image(unsafe, detector.detect_image(unsafe)).size)
