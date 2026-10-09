@@ -1,137 +1,205 @@
-/**
- * Content Script - Main injection point for image monitoring
- * Runs in the page context and processes images
- */
-
-(function() {
+(function () {
   'use strict';
 
-  // Inject detector and blur scripts
-  function injectScripts() {
-    const detector = document.createElement('script');
-    detector.src = chrome.runtime.getURL('js/detector.js');
-    detector.onload = function() { this.remove(); };
-    document.documentElement.appendChild(detector);
+  const detector = new NSFWDetector();
+  const blurController = new BlurController();
+  const processedSources = new WeakMap();
+  const processingQueue = new Set();
 
-    const blur = document.createElement('script');
-    blur.src = chrome.runtime.getURL('js/blur.js');
-    blur.onload = function() { this.remove(); };
-    document.documentElement.appendChild(blur);
+  function getCurrentSource(imageElement) {
+    return imageElement && (imageElement.currentSrc || imageElement.src || imageElement.dataset.src || '');
   }
 
-  // Initialize NSFW Guard
-  function initNSFWGuard() {
-    injectScripts();
-
-    // Wait for scripts to load
-    setTimeout(() => {
-      window.nsfw_detector = new NSFWDetector();
-      window.blur_controller = new BlurController();
-
-      // Load settings from chrome storage
-      chrome.storage.sync.get(['enabled', 'threshold', 'blurStrength', 'blurMethod', 'allowOverride'], (items) => {
-        const settings = {
-          threshold: items.threshold || 62,
-          blurStrength: items.blurStrength || 20,
+  function getStoredSettings() {
+    return new Promise((resolve) => {
+      chrome.storage.sync.get([
+        'enabled',
+        'threshold',
+        'blurStrength',
+        'blurMethod',
+        'allowOverride',
+        'cacheSize'
+      ], (items) => {
+        resolve({
+          enabled: items.enabled !== false,
+          threshold: Number(items.threshold || 70) / 100,
+          blurStrength: Number(items.blurStrength || 20),
           blurMethod: items.blurMethod || 'gaussian',
-          allowOverride: items.allowOverride !== false
-        };
-
-        if (items.enabled !== false) {
-          window.nsfw_detector.updateSettings({ threshold: items.threshold / 100 });
-          window.blur_controller.updateSettings({
-            blurStrength: items.blurStrength,
-            blurMethod: items.blurMethod,
-            allowOverride: items.allowOverride
-          });
-
-          processAllImages();
-          setupMutationObserver();
-        }
-      });
-    }, 100);
-  }
-
-  // Process all existing images
-  async function processAllImages() {
-    const images = document.querySelectorAll('img');
-    console.log(`[NSFW Guard] Found ${images.length} images to process`);
-
-    for (const img of images) {
-      if (img.src && img.src.trim()) {
-        processImage(img);
-      }
-    }
-  }
-
-  // Process single image
-  async function processImage(img) {
-    if (img.dataset.nsfwGuardProcessed) return;
-    img.dataset.nsfwGuardProcessed = 'true';
-
-    try {
-      const result = await window.nsfw_detector.detect(img);
-
-      if (result.isNSFW) {
-        window.blur_controller.apply(img, result);
-        console.log(`[NSFW Guard] Blurred image:`, img.src, result);
-      } else if (result.isUncertain && result.confidence > 0.5) {
-        window.blur_controller.apply(img, result);
-        console.log(`[NSFW Guard] Applied cautious blur:`, img.src, result);
-      }
-
-      // Send stats to background
-      chrome.runtime.sendMessage({
-        action: 'updateStats',
-        result: result
-      }).catch(() => {});
-    } catch (error) {
-      console.error('[NSFW Guard] Image processing failed:', error);
-    }
-  }
-
-  // Setup mutation observer for dynamic images
-  function setupMutationObserver() {
-    const observer = new MutationObserver((mutations) => {
-      mutations.forEach((mutation) => {
-        mutation.addedNodes.forEach((node) => {
-          if (node.nodeType === Node.ELEMENT_NODE) {
-            if (node.tagName === 'IMG') {
-              setTimeout(() => processImage(node), 100);
-            } else {
-              const images = node.querySelectorAll('img');
-              images.forEach(img => {
-                setTimeout(() => processImage(img), 100);
-              });
-            }
-          }
+          allowOverride: items.allowOverride !== false,
+          cacheSize: Number(items.cacheSize || 512)
         });
       });
     });
+  }
 
-    observer.observe(document.body, {
+  async function applySettings() {
+    const settings = await getStoredSettings();
+    detector.updateSettings({
+      enabled: settings.enabled,
+      threshold: settings.threshold,
+      cacheSize: settings.cacheSize
+    });
+
+    blurController.updateSettings({
+      blurStrength: settings.blurStrength,
+      blurMethod: settings.blurMethod,
+      allowOverride: settings.allowOverride
+    });
+
+    if (!settings.enabled) {
+      document.querySelectorAll('img').forEach((img) => {
+        blurController.remove(img);
+      });
+    }
+  }
+
+  async function processImage(imageElement) {
+    if (!(imageElement instanceof HTMLImageElement)) {
+      return;
+    }
+
+    if (!imageElement.isConnected || !imageElement.src) {
+      return;
+    }
+
+    const source = getCurrentSource(imageElement);
+    if (!source) {
+      return;
+    }
+
+    if (processingQueue.has(imageElement)) {
+      return;
+    }
+
+    const previous = processedSources.get(imageElement);
+    if (previous === source && imageElement.dataset.nsfwGuardProcessed === 'true') {
+      return;
+    }
+
+    processingQueue.add(imageElement);
+    try {
+      const result = await detector.detect(imageElement);
+      const wasBlurred = imageElement.dataset.nsfwGuardBlurred === 'true';
+
+      if (result.isNSFW) {
+        blurController.apply(imageElement, result);
+        imageElement.dataset.nsfwGuardBlurred = 'true';
+      } else {
+        if (wasBlurred) {
+          blurController.remove(imageElement);
+        }
+        imageElement.dataset.nsfwGuardBlurred = 'false';
+      }
+
+      imageElement.dataset.nsfwGuardProcessed = 'true';
+      processedSources.set(imageElement, source);
+
+      chrome.runtime.sendMessage({
+        action: 'updateStats',
+        result
+      }).catch(() => {});
+    } catch (error) {
+      console.error('[NSFW Guard] Image processing failed:', error);
+    } finally {
+      processingQueue.delete(imageElement);
+    }
+  }
+
+  function scanAllImages() {
+    document.querySelectorAll('img').forEach((img) => {
+      if (img.offsetParent !== null || img.getBoundingClientRect().width > 0) {
+        processImage(img);
+      }
+    });
+  }
+
+  function observeDom() {
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        mutation.addedNodes.forEach((node) => {
+          if (!(node instanceof Element)) {
+            return;
+          }
+
+          if (node.tagName === 'IMG') {
+            processImage(node);
+          }
+
+          node.querySelectorAll?.('img').forEach((img) => {
+            processImage(img);
+          });
+        });
+
+        if (mutation.type === 'attributes' && mutation.target instanceof HTMLImageElement) {
+          processImage(mutation.target);
+        }
+      }
+    });
+
+    observer.observe(document.documentElement, {
       childList: true,
-      subtree: true
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['src', 'srcset']
     });
 
     return observer;
   }
 
-  // Listen for messages from background
-  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    if (request.action === 'reprocess') {
-      document.querySelectorAll('img[data-nsfw-guard-processed]').forEach(img => {
-        delete img.dataset.nsfwGuardProcessed;
+  function observeViewport() {
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          processImage(entry.target);
+        }
       });
-      processAllImages();
-      sendResponse({ status: 'reprocessing' });
+    }, {
+      rootMargin: '200px'
+    });
+
+    document.querySelectorAll('img').forEach((img) => observer.observe(img));
+    return observer;
+  }
+
+  function handleSettingsChange() {
+    applySettings().then(() => {
+      scanAllImages();
+    });
+  }
+
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.action === 'settingsChanged') {
+      handleSettingsChange();
+      sendResponse({ ok: true });
+    }
+    if (message.action === 'reprocess') {
+      processedSources.clear();
+      scanAllImages();
+      sendResponse({ ok: true });
     }
   });
 
-  // Start on DOM ready or immediately if already ready
+  window.addEventListener('load', () => {
+    applySettings().then(() => {
+      scanAllImages();
+      observeDom();
+      observeViewport();
+    });
+  });
+
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initNSFWGuard);
+    document.addEventListener('DOMContentLoaded', () => {
+      applySettings().then(() => {
+        scanAllImages();
+        observeDom();
+        observeViewport();
+      });
+    });
   } else {
-    initNSFWGuard();
+    applySettings().then(() => {
+      scanAllImages();
+      observeDom();
+      observeViewport();
+    });
   }
 })();

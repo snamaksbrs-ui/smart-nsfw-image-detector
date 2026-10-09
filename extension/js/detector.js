@@ -1,15 +1,11 @@
-/**
- * NSFW Image Detector - Local Processing Engine
- * Runs detection on images without sending them to external servers
- */
-
 class NSFWDetector {
   constructor(settings = {}) {
     this.settings = {
-      threshold: 0.62,
+      threshold: 0.7,
       uncertainThreshold: 0.45,
       cacheSize: 512,
       maxImageSize: 1600,
+      enabled: true,
       debugMode: false,
       ...settings
     };
@@ -18,237 +14,173 @@ class NSFWDetector {
     this.stats = {
       scanned: 0,
       unsafe: 0,
-      avgLatency: 0,
-      totalLatency: 0
+      latencyTotal: 0,
+      avgLatency: 0
     };
   }
 
-  /**
-   * Detect if image is NSFW
-   * @param {HTMLImageElement|string} imageSource - Image element or URL
-   * @returns {Promise<DetectionResult>}
-   */
-  async detect(imageSource) {
+  async detect(imageElement) {
+    if (!this.settings.enabled) {
+      return this._result({
+        isNSFW: false,
+        isUncertain: false,
+        confidence: 0,
+        label: 'safe',
+        model: 'disabled',
+        notes: 'Detection disabled by user settings.'
+      }, 0);
+    }
+
+    const source = (imageElement && (imageElement.currentSrc || imageElement.src)) || '';
+    if (!source) {
+      return this._result({
+        isNSFW: false,
+        isUncertain: false,
+        confidence: 0,
+        label: 'safe',
+        model: 'local',
+        notes: 'Image source missing or inaccessible.'
+      }, 0);
+    }
+
+    if (this.cache.has(source)) {
+      return this.cache.get(source);
+    }
+
+    const start = performance.now();
+
     try {
-      const imageKey = this.getImageKey(imageSource);
-      const cached = this.cache.get(imageKey);
-      if (cached) return cached;
-
-      const startTime = performance.now();
-      const imageData = await this.normalizeImage(imageSource);
-      const result = await this.analyzeImage(imageData);
-      result.latency = performance.now() - startTime;
-
-      this.updateStats(result);
-      this.cacheResult(imageKey, result);
-
+      const model = await window.__nsfwGuardModelLoader.ensureModel();
+      const tensor = await this._toTensor(imageElement);
+      const predictions = await model.classify(tensor);
+      const result = this._buildResult(predictions);
+      result.latency = performance.now() - start;
+      this._updateStats(result);
+      this.cache.set(source, result);
       return result;
     } catch (error) {
-      console.error('[NSFW Guard] Detection error:', error);
-      return this.getDefaultResult('error', 0.5, `Detection failed: ${error.message}`);
+      const fallback = this._result({
+        isNSFW: false,
+        isUncertain: true,
+        confidence: 0.4,
+        label: 'uncertain',
+        model: 'nsfwjs-local',
+        notes: `Model classification failed: ${error.message}`
+      }, performance.now() - start);
+      this.cache.set(source, fallback);
+      return fallback;
     }
   }
 
-  /**
-   * Get unique key for image
-   * @private
-   */
-  getImageKey(source) {
-    if (typeof source === 'string') {
-      return source;
+  _buildResult(predictions) {
+    const unsafeClasses = new Set(['Porn', 'Hentai', 'Sexy', 'Explicit']);
+    const adultScore = predictions
+      .filter((entry) => unsafeClasses.has(entry.className))
+      .reduce((sum, entry) => sum + Number(entry.probability || 0), 0);
+
+    const moderateScore = predictions
+      .filter((entry) => entry.className === 'Neutral' || entry.className === 'Drawing')
+      .reduce((sum, entry) => sum + Number(entry.probability || 0), 0);
+
+    const confidence = Math.min(1, Math.max(0, adultScore / Math.max(1, adultScore + moderateScore)));
+
+    let isNSFW = false;
+    let isUncertain = false;
+
+    if (confidence >= this.settings.threshold) {
+      isNSFW = true;
+    } else if (confidence >= this.settings.uncertainThreshold) {
+      isUncertain = true;
     }
-    if (source instanceof HTMLImageElement) {
-      return source.src || source.currentSrc || Math.random().toString();
-    }
-    if (source instanceof HTMLCanvasElement) {
-      return source.toDataURL('image/jpeg', 0.7);
-    }
-    return Math.random().toString();
+
+    const label = isNSFW ? 'unsafe' : isUncertain ? 'uncertain' : 'safe';
+
+    return this._result({
+      isNSFW,
+      isUncertain,
+      confidence,
+      label,
+      model: 'nsfwjs-local',
+      notes: 'Based on browser-local NSFWJS classifier.',
+      details: { predictions, riskyScore: confidence }
+    }, 0);
   }
 
-  /**
-   * Normalize image to canvas
-   * @private
-   */
-  async normalizeImage(source) {
+  _toTensor(imageElement) {
     return new Promise((resolve, reject) => {
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-
-      if (!ctx) {
-        reject(new Error('Canvas context not available'));
+      const element = imageElement;
+      if (!(element instanceof HTMLImageElement)) {
+        reject(new Error('Only HTMLImageElement inputs are supported.'));
         return;
       }
 
-      const loadImage = (image) => {
-        // Resize if needed
-        let width = image.naturalWidth || image.width;
-        let height = image.naturalHeight || image.height;
+      if (!element.complete || !element.naturalWidth) {
+        reject(new Error('Image is not fully loaded yet.'));
+        return;
+      }
 
-        if (Math.max(width, height) > this.settings.maxImageSize) {
-          const ratio = this.settings.maxImageSize / Math.max(width, height);
-          width = Math.round(width * ratio);
-          height = Math.round(height * ratio);
-        }
+      try {
+        const canvas = document.createElement('canvas');
+        const maxDimension = this.settings.maxImageSize;
+        const ratio = Math.min(1, maxDimension / Math.max(element.naturalWidth, element.naturalHeight));
+        const width = Math.max(1, Math.round(element.naturalWidth * ratio));
+        const height = Math.max(1, Math.round(element.naturalHeight * ratio));
 
         canvas.width = width;
         canvas.height = height;
 
-        try {
-          ctx.drawImage(image, 0, 0, width, height);
-          resolve(ctx.getImageData(0, 0, width, height));
-        } catch (error) {
-          reject(new Error(`Failed to draw image: ${error.message}`));
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          reject(new Error('Canvas context is unavailable.'));
+          return;
         }
-      };
 
-      if (typeof source === 'string') {
-        // URL
-        const img = new Image();
-        img.crossOrigin = 'anonymous';
-        img.onload = () => loadImage(img);
-        img.onerror = () => reject(new Error(`Failed to load image from URL: ${source}`));
-        img.src = source;
-      } else if (source instanceof HTMLImageElement) {
-        loadImage(source);
-      } else {
-        reject(new Error('Unsupported image source'));
+        ctx.drawImage(element, 0, 0, width, height);
+
+        const imageData = ctx.getImageData(0, 0, width, height);
+        const tensor = window.tf.browser.fromPixels(imageData, 3);
+        resolve(tensor);
+      } catch (error) {
+        reject(error);
       }
     });
   }
 
-  /**
-   * Analyze image using heuristics
-   * @private
-   */
-  async analyzeImage(imageData) {
-    const data = imageData.data;
-    let rSum = 0, gSum = 0, bSum = 0;
-    let saturation = 0, brightness = 0;
-    let pixelCount = 0;
-
-    // Process image data
-    for (let i = 0; i < data.length; i += 4) {
-      const r = data[i];
-      const g = data[i + 1];
-      const b = data[i + 2];
-
-      rSum += r;
-      gSum += g;
-      bSum += b;
-      pixelCount++;
-
-      // Calculate per-pixel saturation
-      const max = Math.max(r, g, b);
-      const min = Math.min(r, g, b);
-      const delta = max - min;
-      const lightness = (max + min) / 2;
-
-      if (lightness > 0) {
-        saturation += delta / lightness;
-      }
-
-      brightness += (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-    }
-
-    const avgR = rSum / pixelCount / 255;
-    const avgG = gSum / pixelCount / 255;
-    const avgB = bSum / pixelCount / 255;
-    const avgSaturation = saturation / pixelCount;
-    const avgBrightness = brightness / pixelCount;
-
-    // Heuristic scoring
-    // High red channel + low green/blue = likely skin tone
-    const skinToneLikelihood = Math.max(0, (avgR - Math.max(avgG, avgB)) * 2);
-    // High saturation = potentially adult content
-    const saturationScore = Math.min(1, avgSaturation * 0.8);
-    // Specific color ranges
-    const redBiasBias = Math.max(0, avgR - 0.5);
-
-    let confidence = (skinToneLikelihood * 0.5 + saturationScore * 0.3 + redBiasBias * 0.2);
-    confidence = Math.min(1, Math.max(0, confidence));
-
-    const isNSFW = confidence >= this.settings.threshold;
-    const isUncertain = confidence >= this.settings.uncertainThreshold && confidence < this.settings.threshold;
-
+  _result(payload, latency) {
     return {
-      isNSFW,
-      isUncertain,
-      confidence: Math.round(confidence * 100) / 100,
-      label: isNSFW ? 'unsafe' : (isUncertain ? 'uncertain' : 'safe'),
-      model: 'heuristic-local',
-      details: {
-        skinTone: Math.round(skinToneLikelihood * 100) / 100,
-        saturation: Math.round(avgSaturation * 100) / 100,
-        redBias: Math.round(redBiasBias * 100) / 100,
-        brightness: Math.round(avgBrightness * 100) / 100
-      }
+      ...payload,
+      latency,
+      confidence: Number(payload.confidence || 0),
+      model: payload.model || 'local',
+      notes: payload.notes || ''
     };
   }
 
-  /**
-   * Update statistics
-   * @private
-   */
-  updateStats(result) {
-    this.stats.scanned++;
-    if (result.isNSFW) this.stats.unsafe++;
-    this.stats.totalLatency += result.latency;
-    this.stats.avgLatency = Math.round(this.stats.totalLatency / this.stats.scanned);
-  }
-
-  /**
-   * Cache result with LRU eviction
-   * @private
-   */
-  cacheResult(key, result) {
-    if (this.cache.size >= this.settings.cacheSize) {
-      const firstKey = this.cache.keys().next().value;
-      this.cache.delete(firstKey);
+  _updateStats(result) {
+    this.stats.scanned += 1;
+    if (result.isNSFW) {
+      this.stats.unsafe += 1;
     }
-    this.cache.set(key, result);
+    this.stats.latencyTotal += result.latency || 0;
+    this.stats.avgLatency = Math.round(this.stats.latencyTotal / this.stats.scanned);
   }
 
-  /**
-   * Get default result
-   * @private
-   */
-  getDefaultResult(label, confidence, notes = '') {
-    return {
-      isNSFW: label === 'unsafe',
-      isUncertain: label === 'uncertain',
-      confidence,
-      label,
-      model: 'default',
-      notes,
-      latency: 0,
-      details: {}
-    };
-  }
-
-  /**
-   * Clear cache
-   */
   clearCache() {
     this.cache.clear();
   }
 
-  /**
-   * Get statistics
-   */
   getStats() {
     return { ...this.stats };
   }
 
-  /**
-   * Update settings
-   */
   updateSettings(newSettings) {
-    this.settings = { ...this.settings, ...newSettings };
+    this.settings = {
+      ...this.settings,
+      ...newSettings
+    };
   }
 }
 
-// Export for use in content script
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = NSFWDetector;
 }

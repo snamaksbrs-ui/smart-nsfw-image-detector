@@ -1,11 +1,11 @@
 /**
  * Background Service Worker
- * Manages extension settings and statistics
+ * Manages extension settings and statistics.
  */
 
-const defaultSettings = {
+const DEFAULT_SETTINGS = {
   enabled: true,
-  threshold: 62,
+  threshold: 70,
   blurStrength: 20,
   blurMethod: 'gaussian',
   allowOverride: true,
@@ -13,52 +13,64 @@ const defaultSettings = {
   uncertainThreshold: 45
 };
 
-const statistics = {
-  imagesScanned: 0,
-  imagesBlurred: 0,
-  totalProcessingTime: 0,
-  avgProcessingTime: 0
-};
-
-// Initialize settings on install
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.storage.sync.get(null, (items) => {
-    if (Object.keys(items).length === 0) {
-      chrome.storage.sync.set(defaultSettings);
-    }
-  });
-  chrome.storage.local.set({ statistics });
-});
-
-// Listen for messages from content script
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === 'updateStats') {
-    updateStatistics(request.result);
-    sendResponse({ status: 'stats updated' });
-  }
-});
-
-// Update statistics
-function updateStatistics(result) {
-  chrome.storage.local.get(['statistics'], (data) => {
-    const stats = data.statistics || statistics;
-    stats.imagesScanned++;
-    if (result.isNSFW) {
-      stats.imagesBlurred++;
-    }
-    stats.totalProcessingTime += result.latency || 0;
-    stats.avgProcessingTime = Math.round(stats.totalProcessingTime / stats.imagesScanned);
-    chrome.storage.local.set({ statistics: stats });
+async function getStoredSettings() {
+  return new Promise((resolve) => {
+    chrome.storage.sync.get(Object.keys(DEFAULT_SETTINGS), (items) => {
+      resolve({
+        ...DEFAULT_SETTINGS,
+        ...items
+      });
+    });
   });
 }
 
-// Listen for changes in settings
-chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName === 'sync') {
-    // Notify all tabs to update their settings
+chrome.runtime.onInstalled.addListener(async () => {
+  const existing = await getStoredSettings();
+  chrome.storage.sync.set(existing);
+  chrome.storage.local.set({
+    statistics: {
+      imagesScanned: 0,
+      imagesBlurred: 0,
+      totalProcessingTime: 0,
+      avgProcessingTime: 0
+    }
+  });
+});
+
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === 'updateStats') {
+    const stats = request.result || {};
+    chrome.storage.local.get(['statistics'], (data) => {
+      const current = data.statistics || {
+        imagesScanned: 0,
+        imagesBlurred: 0,
+        totalProcessingTime: 0,
+        avgProcessingTime: 0
+      };
+
+      current.imagesScanned = (Number(current.imagesScanned) || 0) + 1;
+      if (stats.isNSFW) {
+        current.imagesBlurred = (Number(current.imagesBlurred) || 0) + 1;
+      }
+      current.totalProcessingTime = (Number(current.totalProcessingTime) || 0) + Number(stats.latency || 0);
+      current.avgProcessingTime = Math.round(current.totalProcessingTime / current.imagesScanned);
+      chrome.storage.local.set({ statistics: current });
+    });
+
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  return false;
+});
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'sync') {
     chrome.tabs.query({}, (tabs) => {
       tabs.forEach((tab) => {
-        chrome.tabs.sendMessage(tab.id, { action: 'settingsChanged' }).catch(() => {});
+        if (tab && tab.id) {
+          chrome.tabs.sendMessage(tab.id, { action: 'settingsChanged' }).catch(() => {});
+        }
       });
     });
   }
